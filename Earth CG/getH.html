@@ -1,0 +1,157 @@
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>World Height Map Generator</title>
+</head>
+<body>
+    <h2>513 × 513 World Height Map Generator</h2>
+
+    <button id="start">고도 데이터 가져오기</button>
+
+    <p id="status">대기 중</p>
+
+    <script type="module">
+        import { fromUrl } from
+            "https://cdn.jsdelivr.net/npm/geotiff@2.1.3/+esm";
+
+        const SIZE = 513;
+
+        // GEDTM30 filtered DTM 원본
+        const TIFF_URL =
+            "https://s3.opengeohub.org/global/edtm/" +
+            "filtered.dtm_edtm_m_30m_s_20060101_20151231_go_" +
+            "epsg.4326.3855_v20250619.tif";
+
+        const status = document.getElementById("status");
+        const button = document.getElementById("start");
+
+        button.addEventListener("click", async () => {
+            button.disabled = true;
+
+            try {
+                status.textContent = "GeoTIFF 파일에 연결하는 중...";
+
+                // 1. 원본 GeoTIFF 열기
+                const tiff = await fromUrl(TIFF_URL);
+
+                const image = await tiff.getImage();
+
+                console.log("원본 크기:", 
+                    image.getWidth(), image.getHeight());
+
+                console.log("원본 영역:", image.getBoundingBox());
+
+                // 2. 전 세계 영역을 512×512로 읽기
+                status.textContent =
+                    "전 세계 지형 데이터를 읽는 중...";
+
+                const raster = await tiff.readRasters({
+                    bbox: [-180, -90, 180, 90],
+                    width: SIZE,
+                    height: SIZE,
+                    resampleMethod: "bilinear",
+                    interleave: true
+                });
+
+                // 3. NoData 값 확인
+                const noData = image.getGDALNoData();
+
+                console.log("NoData:", noData);
+
+                // 4. 512×512 JavaScript 배열 생성
+                const heightMap = [];
+
+                let missingCount = 0;
+                let minHeight = Infinity;
+                let maxHeight = -Infinity;
+
+                for (let y = 0; y < SIZE; y++) {
+                    const row = [];
+
+                    for (let x = 0; x < SIZE; x++) {
+                        const index = y * SIZE + x;
+
+                        const raw = raster[index];
+
+                        let elevation;
+
+                        // GEDTM30 원본은 0.1 스케일 적용
+                        if (
+                            !Number.isFinite(raw) ||
+                            (noData !== null &&
+                             noData !== undefined &&
+                             raw === Number(noData)) ||
+                            raw < -1000000 ||
+                            raw > 1000000
+                        ) {
+                            elevation = 0;
+                            missingCount++;
+                        } else {
+                            elevation = Math.round(raw * 0.1 * 10) / 10;
+                        }
+
+                        row.push(elevation);
+
+                        if (elevation !== 0) {
+                            minHeight = Math.min(minHeight, elevation);
+                            maxHeight = Math.max(maxHeight, elevation);
+                        }
+                    }
+
+                    heightMap.push(row);
+                }
+
+                // 5. JavaScript 텍스트 생성
+                status.textContent = "텍스트 파일 생성 중...";
+
+                const output =
+                    "// GEDTM30 Global Terrain Height Map\n" +
+                    "// Size: 512 x 512\n" +
+                    "// Unit: meters\n" +
+                    "// Row: Latitude +90 to -90\n" +
+                    "// Column: Longitude -180 to +180\n\n" +
+                    "const heightMap = " +
+                    JSON.stringify(heightMap) +
+                    ";\n";
+
+                // 6. 파일 다운로드
+                const blob = new Blob([output], {
+                    type: "text/javascript;charset=utf-8"
+                });
+
+                const url = URL.createObjectURL(blob);
+
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = "heightMap.js";
+
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+
+                URL.revokeObjectURL(url);
+
+                status.textContent =
+                    "완료! heightMap.js 파일을 다운로드했습니다.";
+
+                console.log("배열 크기:", heightMap.length,
+                    heightMap[0].length);
+
+                console.log("최저 고도:", minHeight);
+                console.log("최고 고도:", maxHeight);
+                console.log("결측 픽셀:", missingCount);
+
+            } catch (error) {
+                console.error(error);
+
+                status.textContent =
+                    "오류 발생: " + error.message;
+
+                button.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
